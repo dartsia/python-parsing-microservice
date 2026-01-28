@@ -6,9 +6,13 @@ python-multipart==0.0.9
 # --- Data ---
 pandas==2.2.1
 
-# --- Docling + ML ---
+# --- Docling stack ---
 docling==1.1.2
 
+# REQUIRED by docling (runtime import!)
+deepsearch-toolkit==0.6.1
+
+# --- ML ---
 torch==2.2.2
 transformers==4.38.2
 sentencepiece==0.2.0
