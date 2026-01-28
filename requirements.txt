@@ -9,6 +9,6 @@ pandas==2.2.1
 # --- Docling + ML ---
 docling==1.1.2
 
-torch==2.2.1
+torch==2.2.2
 transformers==4.38.2
 sentencepiece==0.2.0
