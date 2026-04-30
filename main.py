@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import os
 
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "True"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
@@ -15,7 +16,6 @@ def extract_signatures(text):
     signatures = {}
 
     dean_pattern = r"Декан факультету.*?комп'ютерних технологій.*?(доц\.\s*[A-Я]\.[A-Я]\.\s*[A-Яа-я]+)"
-
     head_pattern = r"Завідувач.*?кафедри системного проектування.*?(доц\.\s*[A-Я]\.[A-Я]\.\s*[A-Яа-я]+)"
     
     dean_match = re.search(dean_pattern, text, re.S | re.I)
@@ -116,59 +116,110 @@ def parse_discipline_row(row_data, semester):
         "other": get_int(data_start_idx + 15)
     }
 
-print("Ініціалізація Docling (завантаження моделей)...")
-converter = DocumentConverter()
-print("Docling готовий до роботи")
+def parse_excel_file(file_path):
+    """Парсинг Excel файлу напряму через pandas"""
+    disciplines = []
+    
+    try:
+        df = pd.read_excel(file_path, sheet_name=0, header=None)
+        
+        print(f"Excel розмір: {df.shape}")
+        
+        current_semester = 1
+        
+        for idx, row in df.iterrows():
+            row_data = row.values.tolist()
+            row_text = " ".join([str(v) for v in row_data if pd.notna(v)])
+
+            if "Всього" in row_text and ("семестр" in row_text or "І" in row_text.upper()):
+                current_semester = 2
+                print(f"Перемикання на 2-й семестр (рядок {idx})")
+                continue
+
+            if any(kw in row_text for kw in ["Дисципліни", "Факультет", "Спеціальність", 
+                                               "студентів", "денне", "заочне", "Лекції", "Практ",
+                                               "ПЛАН", "навантаження", "Викладача"]):
+                continue
+
+            discipline = parse_discipline_row(row_data, current_semester)
+            
+            if discipline:
+                print(f"→ {discipline['name']} | {discipline['specialty']}-{discipline['course']} | Семестр {current_semester}")
+                disciplines.append(discipline)
+        
+        print(f"Всього дисциплін з Excel: {len(disciplines)}")
+
+        full_text = df.to_string()
+        meta = extract_signatures(full_text)
+        
+        return {"metadata": meta, "disciplines": disciplines}
+    
+    except Exception as e:
+        print(f"Помилка парсингу Excel: {str(e)}")
+        raise
+
+# print("Ініціалізація Docling (завантаження моделей)...")
+# converter = DocumentConverter()
+converter = None
+print("Docling тимчасово вимкнено (тестування Excel)")
 
 @app.post("/parse")
 async def parse_document(file: UploadFile = File(...)):
     disciplines = []
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp:
+    file_extension = Path(file.filename).suffix.lower()
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp:
         content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
     
     try:
-        print(f"Парсинг файлу: {file.filename}")
+        print(f"Парсинг файлу: {file.filename} (тип: {file_extension})")
 
-        result = converter.convert(tmp_path)
+        if file_extension in ['.xlsx', '.xls']:
+            print("Використовую прямий парсинг Excel через pandas")
+            result_data = parse_excel_file(tmp_path)
+            return result_data
 
-        full_text = result.document.export_to_markdown()
-        
-        print(f"Знайдено таблиць: {len(result.document.tables)}")
-
-        current_semester = 1
-        
-        for table_idx, table in enumerate(result.document.tables):
-            df = table.export_to_dataframe()
+        else:
+            print("Використовую Docling для парсингу")
+            result = converter.convert(tmp_path)
+            full_text = result.document.export_to_markdown()
             
-            print(f"\nТаблиця {table_idx + 1}: {df.shape}")
+            print(f"Знайдено таблиць: {len(result.document.tables)}")
 
-            for idx, row in df.iterrows():
-                row_data = row.values.tolist()
-                row_text = " ".join([str(v) for v in row_data if pd.notna(v)])
-
-                if "Всього" in row_text and ("семестр" in row_text or "І" in row_text.upper()):
-                    current_semester = 2
-                    print(f"Перемикання на 2-й семестр")
-                    continue
-
-                if any(kw in row_text for kw in ["Дисципліни", "Факультет", "Спеціальність", 
-                                                   "студентів", "денне", "заочне", "Лекції", "Практ"]):
-                    continue
-
-                discipline = parse_discipline_row(row_data, current_semester)
+            current_semester = 1
+            
+            for table_idx, table in enumerate(result.document.tables):
+                df = table.export_to_dataframe()
                 
-                if discipline:
-                    print(f"→ {discipline['name']} | {discipline['specialty']}-{discipline['course']} | Семестр {current_semester}")
-                    disciplines.append(discipline)
-        
-        print(f"\nВсього дисциплін: {len(disciplines)}")
+                print(f"\nТаблиця {table_idx + 1}: {df.shape}")
 
-        meta = extract_signatures(full_text)
-        
-        return {"metadata": meta, "disciplines": disciplines}
+                for idx, row in df.iterrows():
+                    row_data = row.values.tolist()
+                    row_text = " ".join([str(v) for v in row_data if pd.notna(v)])
+
+                    if "Всього" in row_text and ("семестр" in row_text or "І" in row_text.upper()):
+                        current_semester = 2
+                        print(f"Перемикання на 2-й семестр")
+                        continue
+
+                    if any(kw in row_text for kw in ["Дисципліни", "Факультет", "Спеціальність", 
+                                                       "студентів", "денне", "заочне", "Лекції", "Практ"]):
+                        continue
+
+                    discipline = parse_discipline_row(row_data, current_semester)
+                    
+                    if discipline:
+                        print(f"→ {discipline['name']} | {discipline['specialty']}-{discipline['course']} | Семестр {current_semester}")
+                        disciplines.append(discipline)
+            
+            print(f"\nВсього дисциплін: {len(disciplines)}")
+
+            meta = extract_signatures(full_text)
+            
+            return {"metadata": meta, "disciplines": disciplines}
     
     except Exception as e:
         print(f"Помилка: {str(e)}")
@@ -178,6 +229,10 @@ async def parse_document(file: UploadFile = File(...)):
     
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "supported_formats": ["pdf", "docx", "xlsx", "xls"]}
 
 if __name__ == "__main__":
     import uvicorn
